@@ -1,0 +1,795 @@
+---
+title: "CUNY 612 - Project 2"
+author: "Peter Kowalchuk"
+date: "2/22/2020"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE,warning=FALSE}
+library(dplyr)
+library(tidytext)
+library('recommenderlab')
+library(kableExtra)
+library(ggplot2)
+library(data.table)
+```
+
+#Introduction
+
+The main idea in this project is to build the recommender required to build a bigger system in which movie plots can be used to recommended movies from a search which can contain different words.  Final more complete implementation would receive as an input a description of a desired movie in the search. From this text the recommender would use the plot of movies in the catalog to determine the recommendation list. To do this each word in the input description would be used to select movies, the final list would amalgamate all movies from all words. In this scenario a recommender needs to be designed using the plots of the movies in the catalog. Each of these movies would then be treated as a user in a rating recommender. Using TF-IDF, words from the plot will be selected to become features for each movie. These features will be then used to define an item-based and a user-based collaboration recommenders. These recommender would then produce a list of movies recommended for each word. Similar to a recommender producing a list for each user. This recommender can then we used for each word in a movie description in the final complete system. This project does not include the final system, but rather the underlaying recommender.
+
+
+#Data
+
+The main idea in this project is to build the recommender required to build a bigger system in which movie plots can be used to recommended movies from a search which can contain different words.  Final more complete implementation would receive as an input a description of a desired movie in the search. From this text the recommender would use the plot of movies in the catalog to determine the recommendation list. To do this each word in the input description would be used to select movies, the final list would amalgamate all movies from all words. In this scenario a recommender needs to be designed using the plots of the movies in the catalog. Each of these movies would then be treated as a user in a rating recommender. Using TF-IDF, words from the plot will be selected to become features for each movie. These features will be then used to define an item-based and a user-based collaboration recommenders. These recommender would then produce a list of movies recommended for each word. Similar to a recommender producing a list for each user. This recommender can then we used for each word in a movie description in the final complete system. This project does not include the final system, but rather the underlaying recommender.
+
+The complete data for this project was sourced from: https://www.kaggle.com/jrobischon/wikipedia-movie-plots
+This is a big dataset that contains a lot of information for a list of movies. For this project we will only use the plot description for each movie. The work here presented also only makes use of 80 movies, but the code was used in for 400 movies with similar results. Processing time for this is very extended, but the complete dataset is available in the project's repo and can be ran with better performance systems.
+
+```{r}
+dataSlice <- read.csv("movies.csv", header = TRUE,colClasses=c("NULL","character",rep("NULL", 5),"character"))[1:80,]
+head(dataSlice) %>% kable() %>% kable_styling() %>% scroll_box(width = "800px", height = "400px")
+```
+
+Before running the recommender code with the complete sliced dataset, a synthetic dataset was used to make sure the code behaves as required by the algorithms. This data is also available in the project's repo.
+
+```{r}
+data <- read.csv("moviesTest.csv", header = TRUE)
+data[] <- lapply(data, as.character)
+data %>% kable() %>% kable_styling() %>% scroll_box(width = "800px", height = "400px")
+```
+
+We also load a corpus of stop words which will be used when defining words to become features for each movie plot.
+
+```{r}
+data(stop_words)
+```
+
+#Synthetic Data
+
+##Data Preparation
+
+###TF-IDF
+
+Build word vectors for each plot by tokenizing each plot, deleting stop words and counting word frequency
+
+```{r message=FALSE}
+titleVector<-data$Title
+wordVectors<-vector()
+countVectors<-vector()
+for(i in 1:length(data[,1])) {
+  plotWordCount<-tibble(text=data[i,"Plot"]) %>% unnest_tokens(word, text) %>% anti_join(stop_words) %>% count(word,sort = TRUE) 
+  wordVectors<-c(wordVectors,plotWordCount[1])
+  countVectors<-c(countVectors,plotWordCount[2])
+}
+rm(plotWordCount,i,data)
+```
+
+Calculate TF
+
+```{r}
+tfVectors<-countVectors
+wordMaxCountVector<-countVectors
+numberOfPlots<-length(wordVectors)
+for(i in 1:numberOfPlots) {
+  #print('*** New Movie Plot ***')
+  #print('**********************')
+  #print(paste('Plot for movie: ',titleVector[i]))
+  thisPlotWords<-wordVectors[[i]]
+  thisPlotCounts<-countVectors[[i]]
+  numberOfWordsInThisPlot<-length(thisPlotWords)
+  for(w in 1:numberOfWordsInThisPlot) {
+    #print(paste('*** New word *** ',w,' of ',numberOfWordsInThisPlot))
+    thisWord<-thisPlotWords[w]
+    thisCount<-thisPlotCounts[w]
+    wordMaxCount<-thisCount
+    #print(paste('Analizing word',thisWord,' which is word ',w,' out of ',numberOfWordsInThisPlot,' words in plot',titleVector[i]))
+    for(j in 1:numberOfPlots) {
+      otherPlotWords<-wordVectors[[j]]
+      otherPlotCounts<-countVectors[[j]]
+      numberOfWordsInOtherPlot<-length(otherPlotWords)
+      #print(paste('Searching for word ',thisWord,' in plot of movie ',titleVector[j],' which has ',numberOfWordsInOtherPlot,' words'))
+      for(z in 1:numberOfWordsInOtherPlot) {
+        otherWord=otherPlotWords[z]
+        otherCount=otherPlotCounts[z]
+        if(thisWord==otherWord) {
+          #print(paste('Word ',thisWord,' found in plot for movie ',titleVector[j]))
+          #print(paste('This plot has ',otherCount,' instances of the word ',otherWord))
+          #if(otherCount>wordMaxCount) {
+          #  print(paste('The plot for ',titleVector[j],' has the most instances of the word ',thisWord,' showing ',otherCount,' times while this plot has ', thisCount))
+          #}
+          wordMaxCount=max(wordMaxCount,otherCount)
+          wordMaxCountVector[[i]][w]<-wordMaxCount
+          #print(paste('Maximum instances of word ',thisWord,' is now ',wordMaxCount))
+        }
+      }
+      #print(paste('The final max count in a document for word',thisWord,' is ',wordMaxCount))
+    }
+    tfVectors[[i]][w]<-tfVectors[[i]][w]/wordMaxCountVector[[i]][w]
+    #print(paste('The TF for word ',thisWord,' is',tfVectors[[i]][w],' in review for movie ',titleVector[i]))
+  }
+}
+rm(i,j,otherCount,otherPlotCounts,otherPlotWords,otherWord,w,z,thisCount,thisPlotCounts,thisPlotWords,thisWord,wordMaxCountVector,numberOfWordsInOtherPlot,numberOfWordsInThisPlot,wordMaxCount)
+```
+
+Calculate IDF
+
+First we calculate ni or the number of documents/plots in which each term appears
+
+```{r}
+niVectors<-countVectors
+numberOfPlots<-length(wordVectors)
+for(i in 1:numberOfPlots) {
+  #print('*** New Movie Plot ***')
+  #print(paste('Plot for movie: ',titleVector[i]))
+  thisPlotWords<-wordVectors[[i]]
+  numberOfWordsInThisPlot<-length(thisPlotWords)
+  for(w in 1:numberOfWordsInThisPlot) { 
+    thisWord<-thisPlotWords[w]
+    niVectors[[i]][w]<-0
+    for(j in 1:numberOfPlots) {
+      otherPlotWords<-wordVectors[[j]]
+      if (any(thisWord==otherPlotWords)) {
+        #print(paste('Found word ',thisWord,' in review ',titleVector[j]))
+        niVectors[[i]][w]<-niVectors[[i]][w]+1
+      }
+    }
+    #print(paste('Word ',thisWord,' appears in ',niVectors[[i]][w],' documents'))
+  }
+}
+rm(i,j,numberOfWordsInThisPlot,otherPlotWords,thisPlotWords,thisWord,w)
+```
+
+We then calculate the Inverse Term Frequency
+
+```{r}
+idfVectors<-niVectors
+for(i in 1:length(niVectors)) {
+  idfVectors[[i]]<-log(numberOfPlots/niVectors[[i]])
+}
+rm(i)
+```
+
+The TF-IDF weight is then calculate by multiplying the FT and IDF
+
+```{r}
+wVectors<-idfVectors
+for(i in 1:length(idfVectors)) {
+  wVectors[[i]]<-idfVectors[[i]]*tfVectors[[i]]+1
+}
+```
+
+```{r}
+wVectors[[1]]
+```
+
+The features for each review is then a set of vectors with the words with the highest weights, together with their scores. For our recommender we select the 10 highest for each review.
+
+```{r}
+numberOfFeatureWords<-5
+documentProfilesVector<-vector()
+for(i in 1:numberOfPlots) {
+  df<-data.frame(wordVectors[[i]],wVectors[[i]])
+  df<-head(df %>% arrange(desc(wVectors..i..)),numberOfFeatureWords)
+  documentProfilesVector<- c(documentProfilesVector,df)
+}
+rm(i)
+```
+
+```{r}
+as.character(documentProfilesVector[[1]])
+documentProfilesVector[[2]]
+```
+
+##Utility matrix
+
+Now that we have words for each review and their respective weights, we have all the data we need to build a Utility Matrix. The matrix will have columns for all words in all movie plots. Rows will be composed of all the movies which have plots. With this, each matrix cell will have the weight of the respective word in the plot of the respective movie. To note, movies can and probably will have more than one plot. To handle this an average of the weight of each word across all plots for the specific movie will be used.
+
+```{r}
+newWordVectors<-vector()
+newWeightsVectors<-vector()
+utilityMatrix<-matrix(0,1,numberOfFeatureWords)
+#for(i in seq(1,numberOfFeatureWords*2,2)) {
+for(i in 1:numberOfFeatureWords) {
+  #print(documentProfilesVector[[i]][j])
+  #print(documentProfilesVector[[i+1]][j])
+  #print(i-i/2+0.5)
+  utilityMatrix[1,i]<-documentProfilesVector[[2]][i]
+}
+utilityMatrix
+rm(i)
+```
+
+```{r}
+utilityMatrixDf<-data.frame(utilityMatrix)
+colnames(utilityMatrixDf)<-documentProfilesVector[[1]]
+rownames(utilityMatrixDf)<-titleVector[1]
+f<-0
+which(row.names(utilityMatrixDf)=='Kansas Saloon Smashers')
+for(i in 2:numberOfPlots) {
+  if(length(which(row.names(utilityMatrixDf)==titleVector[i]))>0) {
+    #print('Found same movie')
+    f<-f+1
+  } else {
+    utilityMatrixDf[length(rownames(utilityMatrixDf))+1,]<-rep(0,numberOfFeatureWords)
+    rownames(utilityMatrixDf)[i-f]<-titleVector[i]
+  }
+}
+for(i in 3:(numberOfPlots*2-1)) {
+  if((i %%2) != 0) {
+    #print('**** New Review ****')
+    #print((i-1)/2+1)
+    #print(titleVector[(i-1)/2+1])
+    for(w in 1:numberOfFeatureWords) {
+      #print(as.character(documentProfilesVector[[i]][w]))
+      foundWords<-which(colnames(utilityMatrixDf)==as.character((documentProfilesVector[[i]][w])))
+      if(length(foundWords)) {
+        #print("found word, calculate average of this weight and weight already in matrix")
+        utilityMatrixDf[titleVector[(i-1)/2+1],colnames(utilityMatrixDf[foundWords[1]])] <- ( documentProfilesVector[[i+1]][w] + utilityMatrixDf[ titleVector[(i-1)/2+1],colnames(utilityMatrixDf)[foundWords[1]] ] ) / 2
+      }
+      else {
+        if(!is.na(documentProfilesVector[[i]][w])) {
+          #print('word needs to be added')
+          #print(as.character(documentProfilesVector[[i]][w]))
+          utilityMatrixDf[as.character((documentProfilesVector[[i]][w]))] <- rep(0,length(rownames(utilityMatrixDf)))
+          utilityMatrixDf[titleVector[(i-1)/2+1],as.character((documentProfilesVector[[i]][w]))] <- documentProfilesVector[[i+1]][w]
+        }
+      }
+    }
+  }
+}
+utilityMatrixDf %>% kable() %>% kable_styling() %>% scroll_box(width = "800px", height = "400px")
+rm(i,w,f,foundWords,newWeightsVectors,newWordVectors,df,countVectors,documentProfilesVector,idfVectors,tfVectors,wordVectors,wVectors,niVectors)
+```
+
+Now that we have a Utility Matrix for the different movie reviews, we can use the library recommendlab to explore our data and to build recommenders. We start by converting our matrix to the real rating matrix class used by this library.
+
+```{r}
+utilityMatrixDf[utilityMatrixDf == 0] <- NA
+utilityMatrixDfT<-transpose(utilityMatrixDf)
+colnames(utilityMatrixDfT)<-rownames(utilityMatrixDf)
+rownames(utilityMatrixDfT)<-colnames(utilityMatrixDf)
+utilityMatrixDfT %>% kable() %>% kable_styling() %>% scroll_box(width = "800px", height = "400px")
+```
+
+```{r}
+utilityRatingMatrix <- as(as.matrix(utilityMatrixDf), "realRatingMatrix")
+utilityRatingMatrixT <- as(as.matrix(utilityMatrixDfT), "realRatingMatrix")
+```
+
+
+Our resulting utility matrix is pretty sparse, as would be expected. Not all reviews have all words, so many cell result in a zero or no value. The class object used by recommenderlab stores the matrix in a very efficient form, rather than using memory to store many empty cell zeros. We can see this by looking into the size of the matrix before and after the transformation to the real rating matrix class object.
+
+```{r}
+object.size(utilityMatrixDfT)
+object.size(utilityMatrix)
+```
+
+##Data Exploration
+
+```{r}
+numberOfMovies<-dim(utilityRatingMatrixT)[1]
+numberOfWords<-dim(utilityRatingMatrixT)[2]
+```
+
+The matrix has plots for `numberOfMovies`, and those plots have `numberOfWords` feature words.
+
+We can also see how many word weights are there in the matrix.
+
+```{r}
+table(as.vector(utilityRatingMatrixT@data)) %>% kable() %>% kable_styling() %>% scroll_box(width = "800px", height = "400px")
+```
+
+As we can see, there is a large amount of zero or no data values, as expected. The number of word weights is dependent of the variety of words and how many times they appear in different plots. We can look at the distribution of movie weights without the missing value (0) for better context.
+
+```{r}
+plot(factor(as.vector(utilityRatingMatrixT@data)[as.vector(utilityRatingMatrixT@data)!=0]))
+```
+
+The histogram shows that most word weights are between 0.5, this represents words that are well distributed among all plots and hence have low weights. The histogram also shows many words with high weights close to 4. We suspect these are word that are unique to each movie plot, that is movies that appear in one movie plot only, which will make them important features to identify and recommend the respective move. 
+
+We can also look at what are the most frequent words in the movie plots.
+
+```{r}
+wordsFreq<-colCounts(utilityRatingMatrix)
+tableWordsFreq<-data.frame(words=names(wordsFreq),plots=wordsFreq)
+tableWordsFreq<-tableWordsFreq[order(tableWordsFreq$plots,decreasing = TRUE),]
+ggplot(tableWordsFreq[1:10,],aes(x=words,y=plots)) + geom_bar(stat = "identity") 
+```
+
+Another interesting exploration is looking at the number of words per plot
+
+```{r}
+wordsPerMovie<-colCounts(utilityRatingMatrixT)
+tableMovies<-data.frame(words=names(wordsPerMovie),plots=wordsPerMovie)
+tableMovies<-tableMovies[order(tableMovies$plots,decreasing = TRUE),]
+ggplot(tableMovies,aes(x=words,y=words)) + geom_bar(stat = "identity") +theme(axis.text = element_text(angle = 90,hjust = 1))
+```
+
+We can also print a heat map of the entire matrix. We should also see the unique words for each review being evident in this plot. In this plots the vertical axis, Users, represents the different words. The horizontal axis, items, represents the different movies.
+
+```{r, out.width="600px", out.height="800px"}
+image(utilityRatingMatrix)
+```
+
+As expected, the diagonal line seen in the heat map reveals most movie plots have unique words, which are assigned high weights by the TF-IDF algorithm. We can also see horizontal lines for two words with low weights, these are words that are present in all plots.
+
+##Data Preparation
+
+**Relevant data**  
+With large datasets we should select words that appear more than a minimum number of times, and movies with a minimum number of words.
+In our case we do not have many words that repeat between movie plots, for that reason we will select all words and all movies.
+
+**Normalizing Data**  
+Data normalization is usually required for datasets in which a human assigned a rating or metric that is used as the value for the feature. In our case the value being used is the weight from the TF-IDF algorithm. This algorithm assigns weights based on word frequency and relevance, a non-subjective process. FO this reason we do not apply normalization.
+
+###Defining training and test sets
+
+```{r}
+whichTrain<-sample(x=c(TRUE,FALSE),size = nrow(utilityRatingMatrixT),replace = TRUE,prob=c(0.8,0.2))
+dataTrain<-utilityRatingMatrixT[whichTrain,]
+image(dataTrain)
+```
+
+```{r}
+dataTest<-utilityRatingMatrixT[!whichTrain,]
+image(dataTest)
+```
+
+
+##Item-based collaborative filtering
+
+###Training
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="IBCF",parameter=list(k=5))
+modelDetails<-getModel(reccModel)
+image(modelDetails$sim)
+```
+
+```{r}
+colSums<-colSums(modelDetails$sim)
+whichMax<-order(colSums,decreasing = TRUE)
+rownames(modelDetails$sim)[whichMax]
+```
+
+
+###Test
+
+```{r}
+nRecommended<-5
+reccPredicted<-predict(object = reccModel,newdata=dataTest,n=nRecommended)
+reccPredicted
+```
+
+```{r}
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+```{r}
+evalAccuracy<-calcPredictionAccuracy(x=reccPredicted,data = dataTest,byUser=TRUE,goodRating=TRUE,5)
+evalAccuracy
+```
+
+###Parameter Experiemntation
+
+As a first experiment we will determine the effect of changing the similarity method used to find similar items and how the recommendation changes. We start with Jaccard distance
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="IBCF",parameter=list(k=5,method = "jaccard"))
+modelDetails<-getModel(reccModel)
+image(modelDetails$sim)
+reccPredicted<-predict(object = reccModel,newdata=dataTest,n=nRecommended)
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+As expected the recommendation is different since the Jaccard method ignores the weights, and rather only considers which words are present in the different movies.
+
+Another similarity method is Pearson. Again showing different results. Pearson is similar to Cosine, but here the ratings or weights in our case, are centered around zero, so that we have positive and negative weights.
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="IBCF",parameter=list(k=5,method = "pearson"))
+modelDetails<-getModel(reccModel)
+image(modelDetails$sim)
+reccPredicted<-predict(object = reccModel,newdata=dataTest,n=nRecommended)
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+Another parameter to consider changing is k, or the number of similar items/movies used in the "collaboration".
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="IBCF",parameter=list(k=10))
+modelDetails<-getModel(reccModel)
+image(modelDetails$sim)
+reccPredicted<-predict(object = reccModel,newdata=dataTest,n=nRecommended)
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+##User-based collaborative filtering
+
+###Training
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="UBCF",parameter=list(nn=20))
+modelDetails<-getModel(reccModel)
+modelDetails
+```
+
+###Test
+
+```{r}
+nRecommended<-5
+reccPredicted<-predict(object=reccModel,newdata=dataTrain,n=nRecommended)
+```
+
+```{r}
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+###Parameter Experiemntation
+
+The same parameter experimentation done for Item collaboration can be done for User collaboration
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="IBCF",parameter=list(k=5,method = "jaccard"))
+modelDetails<-getModel(reccModel)
+image(modelDetails$sim)
+reccPredicted<-predict(object = reccModel,newdata=dataTest,n=nRecommended)
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+Again as expected the recommendation is different, same as for Pearson.
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="IBCF",parameter=list(k=5,method = "pearson"))
+modelDetails<-getModel(reccModel)
+image(modelDetails$sim)
+reccPredicted<-predict(object = reccModel,newdata=dataTest,n=nRecommended)
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+Here again we experiment with a different value for similar items. As with Item collaboration, since the group now of similar users is of different size, the recommendations are different.
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="IBCF",parameter=list(k=10))
+modelDetails<-getModel(reccModel)
+image(modelDetails$sim)
+reccPredicted<-predict(object = reccModel,newdata=dataTest,n=nRecommended)
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+#Real Data
+
+##Data Preparation
+
+###TF-IDF
+
+```{r message=FALSE}
+data<-dataSlice
+titleVector<-data$Title
+wordVectors<-vector()
+countVectors<-vector()
+for(i in 1:length(data[,1])) {
+  plotWordCount<-tibble(text=data[i,"Plot"]) %>% unnest_tokens(word, text) %>% anti_join(stop_words) %>% count(word,sort = TRUE) 
+  wordVectors<-c(wordVectors,plotWordCount[1])
+  countVectors<-c(countVectors,plotWordCount[2])
+}
+rm(plotWordCount,i,stop_words,data)
+
+tfVectors<-countVectors
+wordMaxCountVector<-countVectors
+numberOfPlots<-length(wordVectors)
+for(i in 1:numberOfPlots) {
+  #print('*** New Movie Plot ***')
+  #print('**********************')
+  #print(paste('Plot for movie: ',titleVector[i]))
+  thisPlotWords<-wordVectors[[i]]
+  thisPlotCounts<-countVectors[[i]]
+  numberOfWordsInThisPlot<-length(thisPlotWords)
+  for(w in 1:numberOfWordsInThisPlot) {
+    #print(paste('*** New word *** ',w,' of ',numberOfWordsInThisPlot))
+    thisWord<-thisPlotWords[w]
+    thisCount<-thisPlotCounts[w]
+    wordMaxCount<-thisCount
+    #print(paste('Analizing word',thisWord,' which is word ',w,' out of ',numberOfWordsInThisPlot,' words in plot',titleVector[i]))
+    for(j in 1:numberOfPlots) {
+      otherPlotWords<-wordVectors[[j]]
+      otherPlotCounts<-countVectors[[j]]
+      numberOfWordsInOtherPlot<-length(otherPlotWords)
+      #print(paste('Searching for word ',thisWord,' in plot of movie ',titleVector[j],' which has ',numberOfWordsInOtherPlot,' words'))
+      for(z in 1:numberOfWordsInOtherPlot) {
+        otherWord=otherPlotWords[z]
+        otherCount=otherPlotCounts[z]
+        if(thisWord==otherWord) {
+          #print(paste('Word ',thisWord,' found in plot for movie ',titleVector[j]))
+          #print(paste('This plot has ',otherCount,' instances of the word ',otherWord))
+          #if(otherCount>wordMaxCount) {
+          #  print(paste('The plot for ',titleVector[j],' has the most instances of the word ',thisWord,' showing ',otherCount,' times while this plot has ', thisCount))
+          #}
+          wordMaxCount=max(wordMaxCount,otherCount)
+          wordMaxCountVector[[i]][w]<-wordMaxCount
+          #print(paste('Maximum instances of word ',thisWord,' is now ',wordMaxCount))
+        }
+      }
+      #print(paste('The final max count in a document for word',thisWord,' is ',wordMaxCount))
+    }
+    tfVectors[[i]][w]<-tfVectors[[i]][w]/wordMaxCountVector[[i]][w]
+    #print(paste('The TF for word ',thisWord,' is',tfVectors[[i]][w],' in review for movie ',titleVector[i]))
+  }
+}
+rm(i,j,otherCount,otherPlotCounts,otherPlotWords,otherWord,w,z,thisCount,thisPlotCounts,thisPlotWords,thisWord,wordMaxCountVector,numberOfWordsInOtherPlot,numberOfWordsInThisPlot,wordMaxCount)
+
+niVectors<-countVectors
+numberOfPlots<-length(wordVectors)
+for(i in 1:numberOfPlots) {
+  #print('*** New Movie Plot ***')
+  #print(paste('Plot for movie: ',titleVector[i]))
+  thisPlotWords<-wordVectors[[i]]
+  numberOfWordsInThisPlot<-length(thisPlotWords)
+  for(w in 1:numberOfWordsInThisPlot) { 
+    thisWord<-thisPlotWords[w]
+    niVectors[[i]][w]<-0
+    for(j in 1:numberOfPlots) {
+      otherPlotWords<-wordVectors[[j]]
+      if (any(thisWord==otherPlotWords)) {
+        #print(paste('Found word ',thisWord,' in review ',titleVector[j]))
+        niVectors[[i]][w]<-niVectors[[i]][w]+1
+      }
+    }
+    #print(paste('Word ',thisWord,' appears in ',niVectors[[i]][w],' documents'))
+  }
+}
+rm(i,j,numberOfWordsInThisPlot,otherPlotWords,thisPlotWords,thisWord,w)
+idfVectors<-niVectors
+for(i in 1:length(niVectors)) {
+  idfVectors[[i]]<-log(numberOfPlots/niVectors[[i]])
+}
+rm(i)
+
+wVectors<-idfVectors
+for(i in 1:length(idfVectors)) {
+  wVectors[[i]]<-idfVectors[[i]]*tfVectors[[i]]+1
+}
+
+numberOfFeatureWords<-5
+documentProfilesVector<-vector()
+for(i in 1:numberOfPlots) {
+  df<-data.frame(wordVectors[[i]],wVectors[[i]])
+  df<-head(df %>% arrange(desc(wVectors..i..)),numberOfFeatureWords)
+  documentProfilesVector<- c(documentProfilesVector,df)
+}
+rm(i)
+
+as.character(documentProfilesVector[[1]])
+documentProfilesVector[[2]]
+```
+
+##Utility matrix
+
+
+```{r}
+newWordVectors<-vector()
+newWeightsVectors<-vector()
+utilityMatrix<-matrix(0,1,numberOfFeatureWords)
+#for(i in seq(1,numberOfFeatureWords*2,2)) {
+for(i in 1:numberOfFeatureWords) {
+  #print(documentProfilesVector[[i]][j])
+  #print(documentProfilesVector[[i+1]][j])
+  #print(i-i/2+0.5)
+  utilityMatrix[1,i]<-documentProfilesVector[[2]][i]
+}
+utilityMatrix
+rm(i)
+
+utilityMatrixDf<-data.frame(utilityMatrix)
+colnames(utilityMatrixDf)<-documentProfilesVector[[1]]
+rownames(utilityMatrixDf)<-titleVector[1]
+f<-0
+which(row.names(utilityMatrixDf)=='Kansas Saloon Smashers')
+for(i in 2:numberOfPlots) {
+  if(length(which(row.names(utilityMatrixDf)==titleVector[i]))>0) {
+    #print('Found same movie')
+    f<-f+1
+  } else {
+    utilityMatrixDf[length(rownames(utilityMatrixDf))+1,]<-rep(0,numberOfFeatureWords)
+    rownames(utilityMatrixDf)[i-f]<-titleVector[i]
+  }
+}
+for(i in 3:(numberOfPlots*2-1)) {
+  if((i %%2) != 0) {
+    #print('**** New Review ****')
+    #print((i-1)/2+1)
+    #print(titleVector[(i-1)/2+1])
+    for(w in 1:numberOfFeatureWords) {
+      #print(as.character(documentProfilesVector[[i]][w]))
+      foundWords<-which(colnames(utilityMatrixDf)==as.character((documentProfilesVector[[i]][w])))
+      if(length(foundWords)) {
+        #print("found word, calculate average of this weight and weight already in matrix")
+        utilityMatrixDf[titleVector[(i-1)/2+1],colnames(utilityMatrixDf[foundWords[1]])] <- ( documentProfilesVector[[i+1]][w] + utilityMatrixDf[ titleVector[(i-1)/2+1],colnames(utilityMatrixDf)[foundWords[1]] ] ) / 2
+      }
+      else {
+        if(!is.na(documentProfilesVector[[i]][w])) {
+          #print('word needs to be added')
+          #print(as.character(documentProfilesVector[[i]][w]))
+          utilityMatrixDf[as.character((documentProfilesVector[[i]][w]))] <- rep(0,length(rownames(utilityMatrixDf)))
+          utilityMatrixDf[titleVector[(i-1)/2+1],as.character((documentProfilesVector[[i]][w]))] <- documentProfilesVector[[i+1]][w]
+        }
+      }
+    }
+  }
+}
+utilityMatrixDf %>% kable() %>% kable_styling() %>% scroll_box(width = "800px", height = "400px")
+rm(i,w,f,foundWords,newWeightsVectors,newWordVectors,df,countVectors,documentProfilesVector,idfVectors,tfVectors,wordVectors,wVectors,niVectors)
+```
+
+```{r}
+utilityMatrixDf[utilityMatrixDf == 0] <- NA
+utilityMatrixDfT<-transpose(utilityMatrixDf)
+colnames(utilityMatrixDfT)<-rownames(utilityMatrixDf)
+rownames(utilityMatrixDfT)<-colnames(utilityMatrixDf)
+utilityMatrixDfT %>% kable() %>% kable_styling() %>% scroll_box(width = "800px", height = "400px")
+
+utilityRatingMatrix <- as(as.matrix(utilityMatrixDf), "realRatingMatrix")
+utilityRatingMatrixT <- as(as.matrix(utilityMatrixDfT), "realRatingMatrix")
+```
+
+As with the synthetic data, we can explore the difference in size between the utility matrix as a data frame, and as a recommenderlab class object.
+
+```{r}
+object.size(utilityMatrixDfT)
+object.size(utilityMatrix)
+```
+
+##Data Exploration
+
+```{r}
+numberOfMovies<-dim(utilityRatingMatrixT)[1]
+numberOfMovies
+numberOfWords<-dim(utilityRatingMatrixT)[2]
+numberOfWords
+```
+
+The matrix has plots for `numberOfMovies`, and those plots have `numberOfWords` feature words.
+
+We can also see how many word weights are there in the matrix.
+
+```{r}
+table(as.vector(utilityRatingMatrixT@data)) %>% kable() %>% kable_styling() %>% scroll_box(width = "800px", height = "400px")
+```
+
+
+
+As we can see, same as with the synthetic data, there is a large amount of zero or no data values, as expected. An issue here with this large dataset is that picking the top words with highest weights produces words which are only present in each particular movie plot. So most words have high weights and are only assigned to one movie. 
+
+```{r}
+plot(factor(as.vector(utilityRatingMatrixT@data)[as.vector(utilityRatingMatrixT@data)!=0]))
+```
+
+We can also look at what are the most frequent words in the movie plots. But here again we see that each movie is assigned to one movie only, because they do not show in other movie plots.
+
+```{r}
+wordsFreq<-colCounts(utilityRatingMatrix)
+tableWordsFreq<-data.frame(words=names(wordsFreq),plots=wordsFreq)
+tableWordsFreq<-tableWordsFreq[order(tableWordsFreq$plots,decreasing = TRUE),]
+ggplot(tableWordsFreq[1:10,],aes(x=words,y=plots)) + geom_bar(stat = "identity") 
+```
+
+For this dataset we can also plot the heatmap. In it we can see a diagonal showing that each movie plot has unique words, with a couple of exceptions.
+
+```{r, out.width="600px", out.height="800px"}
+image(utilityRatingMatrix)
+```
+
+##Data Preparation
+
+###Defining training and test sets
+
+```{r}
+whichTrain<-sample(x=c(TRUE,FALSE),size = nrow(utilityRatingMatrixT),replace = TRUE,prob=c(0.8,0.2))
+dataTrain<-utilityRatingMatrixT[whichTrain,]
+image(dataTrain)
+```
+
+```{r}
+dataTest<-utilityRatingMatrixT[!whichTrain,]
+image(dataTest)
+```
+
+##Item-based collaborative filtering
+
+###Training
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="IBCF",parameter=list(k=5))
+modelDetails<-getModel(reccModel)
+```
+
+```{r}
+colSums<-colSums(modelDetails$sim)
+whichMax<-order(colSums,decreasing = TRUE)
+rownames(modelDetails$sim)[whichMax]
+```
+
+###Test
+
+```{r}
+nRecommended<-5
+reccPredicted<-predict(object = reccModel,newdata=dataTest,n=nRecommended)
+reccPredicted
+```
+
+```{r}
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+```{r}
+evalAccuracy<-calcPredictionAccuracy(x=reccPredicted,data = dataTest,byUser=TRUE,goodRating=TRUE,5)
+evalAccuracy
+```
+
+The test data reveals that the recommender is not able to produce a list of recommendations. This is basically because it is unable to find a list of similar items because they are all unique, with unique words. A different kind of recommender should be used. In fact, a simple baseline recommender would perform better due to the nature of the movie plots and their unique words.
+
+##User-based collaborative filtering
+
+###Training
+
+```{r}
+recommenderModels<-recommenderRegistry$get_entries(dataType="realRatingMatrix")
+reccModel<-Recommender(data = dataTrain,method="UBCF",parameter=list(nn=20))
+modelDetails<-getModel(reccModel)
+modelDetails
+```
+
+###Test
+
+Using this kind of recommender, we now are able to produce some movie recommendations.
+
+```{r}
+nRecommended<-5
+reccPredicted<-predict(object=reccModel,newdata=dataTrain,n=nRecommended)
+```
+
+```{r}
+reccMatrix<-sapply(reccPredicted@items,function(x){titleVector[x]})
+reccMatrix
+```
+
+Because we are now collaborating, or using a list of users rather than items, the recommender is capable of producing a list of recommendations. Important to keep in mind is that users in our data are the different words, with their weights. There are still very unique to each movie, so recommendations are not of high quality.
+
+#Summary and conclusions
+
+As shown in the word presented, selecting the right recommender and its parameters is crucial in developing a high performance recommender. Here we were able to build a recommender using both item and user based collaboration. Using synthetic data a TF-IDF algorithm has produced capable of producing features for the mentioned algorithm from a movie plot summary. Features were then produced from both synthetic and real data. Recommenders were then modeled. 
+
+From our finding we can see how picking the right recommender is crucial. Even though both an item based and a user based recommender was produced with synthetic data, real data proved only the user based one was able to produce results. This is due to the nature of the data, unique words in movie plots.
+
+Parameters for the recommenders to use also need to be tuned. As shown here, changing these produce very different results. A fine tune recommender should be able to produce high quality recommendations.
+
+To achieve the greater goal expressed in the introduction a larger number of movie plots is required. Also, a larger number of most important words should be selected so that the dataset shows the same word in different plots and with an appropriate weight. Some experiment were performed with this setup, but these take several hours to run on a standard computer.
+
+Although it was proved that a recommender is possible for the stated system goal, more work need to be done to fine tune both data, recommender selection and parameters.
