@@ -269,8 +269,8 @@ utilityRatingMatrixT <- as(as.matrix(utilityMatrixDfT), "realRatingMatrix")
 Our resulting utility matrix is pretty sparse, as would be expected. Not all reviews have all words, so many cell result in a zero or no value. The class object used by recommenderlab stores the matrix in a very efficient form, rather than using memory to store many empty cell zeros. We can see this by looking into the size of the matrix before and after the transformation to the real rating matrix class object.
 
 ```{r}
-object.size(utilityMatrixDfT)
-object.size(utilityMatrix)
+object.size(utilityRatingMatrix)
+object.size(utilityMatrixDf)
 ```
 
 ##Data Exploration
@@ -793,3 +793,197 @@ Parameters for the recommenders to use also need to be tuned. As shown here, cha
 To achieve the greater goal expressed in the introduction a larger number of movie plots is required. Also, a larger number of most important words should be selected so that the dataset shows the same word in different plots and with an appropriate weight. Some experiment were performed with this setup, but these take several hours to run on a standard computer.
 
 Although it was proved that a recommender is possible for the stated system goal, more work need to be done to fine tune both data, recommender selection and parameters.
+
+
+#Movie Rating Data
+
+Because the movie plot data did not allow to test certain design parameters, such are data normalization, a second dataset was worked on to show the effect of normalization in a model.
+
+##Data
+
+Rating data was sourced from Kaggle
+
+https://www.kaggle.com/prajitdatta/movielens-100k-dataset
+
+```{r}
+data <- read.csv("movieLens.csv", header = FALSE)
+```
+
+As can be seen below, the data contains both user and item IDs, together with the rating given by users to the different movies/items.
+
+```{r}
+colnames(data)<-c('user_id','item_id','rating','timestamp')
+data[1:80,] %>% kable() %>% kable_styling() %>% scroll_box(width = "800px", height = "400px")
+```
+
+We can inspect the data to find the number of users and items
+
+```{r}
+sapply(data, function(x) length(unique(x)))
+numberOfUsers<-max(data[,1])
+numberOfItems<-max(data[,2])
+```
+
+Usint this we can build a utility matrix
+
+```{r}
+ratings <- matrix(0, numberOfUsers, numberOfItems)
+movieIds<-vector()
+for(row in 1:nrow(data)) {
+  ratings[data[row,1],data[row,2]]=data[row,3]
+  movieIds<-c(movieIds,data[row,2])
+}
+dim(ratings)
+```
+
+Zero values indicating no rating are changed to NA. Movies are rated on a scale of 1 to 5.
+
+```{r}
+ratings[ratings == 0] <- NA
+```
+
+Data is converted to the recommender class object for utility rating matrices.
+
+```{r}
+utilityRatingMatrix <- as(as.matrix(ratings), "realRatingMatrix")
+```
+
+```{r}
+object.size(utilityRatingMatrix)
+object.size(ratings)
+```
+
+##Data Exploration
+
+We can inspect what is the rating distribution
+
+```{r}
+plot(factor(as.vector(utilityRatingMatrix@data)[as.vector(utilityRatingMatrix@data)!=0]))
+```
+
+The recommender library also allows to inspect the average ratings
+
+```{r}
+averageRatings<-colMeans(utilityRatingMatrix)
+hist(averageRatings,breaks = 30)
+```
+
+An we can plot a heat map of the complete dataset
+
+```{r}
+image(utilityRatingMatrix)
+```
+
+From this we can see how there are many movies that are not rated many times, the large white areas in the map. So we can select "relevant" data by using only movies that have been rated more than 100 times.
+
+```{r}
+ratingsRelevant<-utilityRatingMatrix[rowCounts(utilityRatingMatrix)>50,colCounts(utilityRatingMatrix)>100]
+ratingsRelevant
+```
+
+```{r}
+image(ratingsRelevant)
+```
+
+We again inspect the averages and find them better centralized around about 3.5
+
+```{r}
+hist(rowMeans(ratingsRelevant),breaks = 30)
+```
+
+##Normalization
+
+Data used previously did not allow for normalization. Here we center rating data around zero.
+
+```{r}
+ratingsRelevantNormailized<-normalize(ratingsRelevant)
+image(ratingsRelevantNormailized)
+```
+
+##Revelevant Data
+
+First a model will be built using relevant data before it has been normalized
+
+Data is split between training and test.
+
+```{r}
+whichSet<-sample(x=1:5,size=nrow(ratingsRelevant),replace = TRUE)
+for(i in 1:5) {
+  whichTrain<-whichSet==i
+  dataTrain<-ratingsRelevant[whichTrain,]
+  dataTest<-ratingsRelevant[!whichTrain,]
+}
+```
+
+##Item-based collaborative filtering
+
+```{r}
+reccModel<-Recommender(data=dataTrain,method="IBCF",parameter=list(k=30))
+modelDetails<-getModel(reccModel)
+image(modelDetails$sim)
+```
+
+
+```{r}
+colSums<-colSums(modelDetails$sim>0)
+hist(colSums,breaks=30)
+```
+
+5 predictions for every users are predicted from the test data.
+
+```{r}
+nRecommended<-5
+reccPredicted<-predict(object=reccModel,newdata=dataTest,n=nRecommended)
+```
+
+We look into the prediction of the first user
+
+```{r}
+reccUser1<-reccPredicted@items[[1]]
+reccUser1
+```
+
+The movie IDs for this recommendation are:
+
+```{r}
+movieIds[reccUser1]
+```
+
+##Normilized Revelevant Data
+
+The same steps are taken now using normalized data.
+
+```{r}
+whichSet<-sample(x=1:5,size=nrow(ratingsRelevantNormailized),replace = TRUE)
+for(i in 1:5) {
+  whichTrain<-whichSet==i
+  dataTrain<-ratingsRelevant[whichTrain,]
+  dataTest<-ratingsRelevant[!whichTrain,]
+}
+```
+
+##Item-based collaborative filtering
+
+```{r}
+reccModel<-Recommender(data=dataTrain,method="IBCF",parameter=list(k=30))
+modelDetails<-getModel(reccModel)
+image(modelDetails$sim)
+```
+
+
+```{r}
+nRecommended<-5
+reccPredicted<-predict(object=reccModel,newdata=dataTest,n=nRecommended)
+```
+
+Same as before we look at user one results
+
+```{r}
+reccPredicted@items[[1]]
+```
+
+When looking at the labels we find that prediction are the same as for non-normalized data.
+
+```{r}
+movieIds[reccUser1]
+```
